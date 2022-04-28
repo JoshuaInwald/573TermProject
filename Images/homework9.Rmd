@@ -1,0 +1,344 @@
+---
+title: "Homework 9"
+author: "Josh + Suhaib"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-pkg, message = FALSE, warning=F}
+library(ggplot2)  # for plots
+library(magrittr)  # for `%>%` operator
+library(here)
+library(readxl)  # for reading excel files
+library(modelsummary)  # for summarizing data
+library(rstan)
+rstan_options(auto_write = TRUE)  # save compiled STAN object
+options(mc.cores = 2)  # use two cores
+library(posterior)
+library(bayesplot)
+#Packages and working directory
+library(psych)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(dplyr)
+library(MASS)
+library(foreign)
+library(randtests)
+library(pscl)
+library(stats)
+library(modelsummary)
+library(ggplot2)
+library(brms)
+library(bayesplot)
+# setwd("/media/sabdurah/51fd1956-269d-4031-b807-9e08cd7e39ed/suhaib/Classes/PSYC573/Homeworks/HW9")
+theme_set(theme_classic() +
+    theme(panel.grid.major.y = element_line(color = "grey92")))
+```
+
+
+# Research Question
+
+> Is there difference in environmentalism ratings in young conservatives primed to think of either their young identity (age manipulation condition) vs young conservatives primed to think of their conservative political identity (political orientation manipulation)?
+# Variables
+
+- `NEP`: [DV] New ecological paradigm (validated scale for measuring environmental attitudes), average of 11 statements rated on: 1 (strongly disagree) to 7 (strongly agree)
+- `Identity`: [IV] Which manipulation condition were participants assigned to? Conservative = political identity manipulation, Millennial / Gen-Z = age identity manipulation 
+- `LibCon`: [Control] Participants' rating of their own liberal-conservative political outlook on an 11-point Likert scale, 0 = extremely liberal to 10 = extremely conservative
+- `Age`: [Control] Participant age
+- `Gender`: [Control] Participant age, male or female
+- `CCPercent`: [Control] Participants were asked "what percentage of climate change is attributable to human activity?", minimum = 0% to maximum = 100%
+- `CSEStotal`: [Control] Scale (average of 8 items) for measuring how strongly participants engaged with their priming instructions (theoretical), minimum = 1 to maximum = 7
+
+
+## Import Data
+
+```{r importANDclean, warning=FALSE}
+data <- read.csv("clean EnvironmentIdentities March9.csv")
+data$Generation <- as.factor(data$Generation)
+data$Politics <- as.factor(data$Politics)
+data$Gender <- as.factor(data$Gender)
+data$Race <- as.factor(data$Race)
+data$Education <- as.factor(data$Education)
+data$SexualOrientation <- as.factor(data$SexualOrientation)
+data$Serious <- as.factor(data$Serious)
+data$LibCon <- data$Politics.1 #just rename for comprehension
+VarsToFix <- colnames(data)[9:40] #Get names of all 7-scale Likert variables
+for (i in 1:length(VarsToFix)){
+  data[,i+8] <- recode(data[,VarsToFix[i]], #Note we have to offset the index by 8
+                       "Strongly disagree" = 1, "Disagree" = 2,
+                       "Somewhat disagree" = 3, "Neither agree nor disagree" = 4,
+                       "Somewhat agree" = 5, "Agree" = 6,
+                       "Strongly agree" = 7)  #use recode from dplyr to change Likert strings to numbers
+  #Note: syntax here was a bit tricky, as recode takes a string, not a data frame
+}
+
+OtherVarsToFix <- colnames(data)[47:58] #Get names of all 5-scale Likert variables
+for (i in 1:length(OtherVarsToFix)){
+  if(recode(data[,OtherVarsToFix[i]],
+            "Never" = 0, "Occassionally" = 1,
+            "Most of the time" = 2, "Always" = 3,
+            "No answer" = 98) == 98) {
+    data[,i+46] <- NA #Note we have to offset the index by 46
+  } else {
+    data[,i+46] <- recode(data[,OtherVarsToFix[i]], #Note we have to offset the index by 46
+                          "Never" = 0, "Occassionally" = 1,
+                          "Most of the time" = 2, "Always" = 3)  
+  }
+}
+
+#Reverse-code necessary variables
+recodeVars <- c("CSES1", "CSES5", "CSES7", "NEP2", "NEP4", 
+                "NEP8", "NEP10", "NEP12","MWB2","MWB4")
+for (i in 1:length(recodeVars)){
+  data[,recodeVars[i]] <- 8 - data[,recodeVars[i]] #recode from  1-to-7 to 7-to-1
+}
+
+#Create scales from items
+data$CSEStotal <- rowMeans(data[, c("CSES1", "CSES2", "CSES3", "CSES4", 
+                                "CSES5", "CSES6", "CSES7", "CSES8")], na.rm = T)
+data$EnvConcern <- rowMeans(data[, c("SC1", "SC2", "SC4", "SC3", "SC5", "SC7", 
+                                     "SC8", "SC10", "SC11")], na.rm = T)
+data$NEP <- rowMeans(data[, c("NEP1", "NEP11", "NEP2", "NEP4", "NEP8", "NEP10", 
+                          "NEP12", "NEP3", "NEP5", "NEP9", "NEP15")], na.rm = T)
+data$VerbCommit <- rowMeans(data[, c("MWB1", "MWB2", "MWB4", "MWB6")], na.rm = T)
+data$RecallTotal <- rowMeans(data[, c("recall1", "recall2", "recall3", 
+                                  "recall4", "recall5", "recall6")], na.rm = T)
+data$IntentTotal <- rowMeans(data[, c("intent1", "intent2", "intent3", 
+                                  "intent4", "intent5", "intent6")], na.rm = T)
+
+data <- data %>%
+  filter(Serious == "Yes",#Remove participants who didn't answer seriously
+         Identity %in% c("a conservative", "a Gen-Zer" , "a Millennial")) 
+
+data$Identity <- as.factor(data$Identity) %>%
+  relevel(data$Identity, ref="a conservative")
+#Remove participants who didn't self-identify into young/conservative
+```
+
+
+## Variable Summary
+
+```{r summ-var}
+datasummary(NEP  * 
+                (N + Mean + SD + Min + Max) ~ 
+               Identity,
+            data = data)
+```
+
+
+```{r}
+hist(data[data$Identity == "a conservative", "NEP"], xlab = "NEP", 
+     main = "NEP for the conservative condition")
+hist(data[data$Identity == "a Gen-Zer", "NEP"], xlab = "NEP", 
+     main = "NEP for the age (Millenial) condition")
+hist(data[data$Identity == "a Millennial", "NEP"], xlab = "NEP", 
+     main = "NEP for the age (Gen Z) condition")
+```
+
+The distributions for the three group are close to the expected ones. All groups values seem normal distributed (Gen-Zers looks skewed but also have a very small sample size). Furthermore, the table above shows that the conservative condition has lower average values than the age conditions, with the Gen-Z condition having the highest values.
+
+
+# Model
+
+\begin{align*}
+Y_{i} \sim N(\mu_i, \sigma) \\
+\mu_{i} = \beta_{0} + \beta_{1} * ManipCondition_{i} + \beta_{2} * CSES_i + \beta_{3} * LibCon_i + \beta_{4} * Age_i + \beta_{5} * CCPercent_i
+\end{align*}
+
+Priors are informed by pre-testing data.
+
+Priors:
+\begin{align*}  
+    \sigma    \sim t_{4}(2.057011, 0.5) \\
+    \beta_{0} \sim N(5, 0.1673972) \\
+    \beta_{1} \sim N(0,5) \\
+    \beta_{2} \sim N(0,5) \\
+    \beta_{3} \sim N(-0.421219, 0.045845) \\
+    \beta_{4} \sim N(0.009764, 0.012115) \\
+    \beta_{5} \sim N(0,5)
+\end{align*}
+
+
+## Run models in BRMS
+
+### Model 0 (no priors)
+
+```{r cache=T}
+m0_b <- brm(NEP ~ Identity + CSEStotal + LibCon + Age + CCpercent, data = data)
+```
+
+
+```{r}
+print(m0_b)
+bayes_R2(m0_b)
+prior_summary(m0_b)
+```
+
+### Model 1
+Informed priors only for established variables directly tested in the pre-trials (age, conservatism) weakly informed priors for new variables tested in pre-trial (Identity, NEP sigma), flat priors for the rest
+
+```{r cache=T}
+m1_b <- brm(NEP ~ Identity + CSEStotal + LibCon + Age + CCpercent, data = data,
+            prior = prior(normal(2, 3), class = "b", coef = "IdentityaGenMZer") +
+              prior(normal(2, 3), class = "b", coef = "IdentityaMillennial") +
+              prior(normal(-0.61515, 0.27414), class = "b", coef = "LibCon") +
+              prior(normal(-0.07686, 0.07046), class = "b", coef = "Age") +
+              prior(student_t(4, 2, 2.5), class = "sigma"))
+```
+
+
+```{r}
+print(m1_b)
+bayes_R2(m1_b)
+prior_summary(m1_b)
+```
+
+### Model 2
+Add informative priors for identity based on pre-trial analyses.
+
+```{r cache=TRUE, results='hide'}
+m2_b <- brm(NEP ~ Identity + CSEStotal + LibCon + Age + CCpercent, data = data,
+            prior = prior(normal(2.3, 0.16), class = "b", coef = "IdentityaGenMZer") + 
+              prior(normal(2.2, 0.16), class = "b", coef = "IdentityaMillennial") +
+              prior(normal(-0.61515, 0.27414), class = "b", coef = "LibCon") +
+              prior(normal(-0.07686, 0.07046), class = "b", coef = "Age") +
+              prior(normal(3.5, 0.8), class = "Intercept") +
+              prior(student_t(4, 2, 0.5), class = "sigma"))
+```
+
+
+```{r}
+print(m2_b)
+bayes_R2(m2_b)
+prior_summary(m2_b)
+```
+
+### New Data Model
+
+Load Data
+```{r}
+newData <- read.csv("Study3DataBayesian.csv")
+newData[newData["Identity"] == "Generation X (\"Gen-X\")", "Identity"] = "GenX"
+newData[newData["Identity"] == "Generation Z (\"Gen-Z\")", "Identity"] = "GenZ"
+newData = newData[-c(1:6),]
+newData <- newData %>% mutate(across(c(Age, CCpercent, LibCon), as.numeric))
+newData <- drop_na(newData)
+newData$Identity <- as.factor(newData$Identity) %>%
+  relevel(newData$Identity, ref="Conservative")
+
+```
+
+
+No informative priors on identity (only for established confounding)
+```{r cache=TRUE, results='hide'}
+m3_b <- brm(NEP ~ Identity + CSEStotal + LibCon + Age + CCpercent, data = newData,
+            prior =
+              prior(normal(-0.61515, 0.27414), class = "b", coef = "LibCon") +
+              prior(normal(0.07686, 0.07046), class = "b", coef = "Age") +
+              prior(student_t(4, 2, 2.5), class = "sigma"))
+```
+
+
+Show summary
+```{r}
+print(m3_b)
+prior_summary(m3_b)
+```
+
+
+Informative priors on original variables (genZ, millenials, confounding)
+```{r cache=TRUE, results='hide'}
+m4_b <- brm(NEP ~ Identity + CSEStotal + LibCon + Age + CCpercent, data = newData,
+            prior = prior(normal(2.3, 0.16), class = "b", coef = "IdentityGenZ") + 
+              prior(normal(2.2, 0.16), class = "b", coef = "IdentityMillennial") +
+              prior(normal(-0.61515, 0.27414), class = "b", coef = "LibCon") +
+              prior(normal(-0.07686, 0.07046), class = "b", coef = "Age") +
+              prior(normal(3.23, 0.4), class = "Intercept") +
+              prior(student_t(4, 2, 0.5), class = "sigma"))
+```
+
+
+Show summary
+```{r}
+print(m4_b)
+prior_summary(m4_b)
+```
+
+
+Informative priors for all variables (all identities + confounding)
+```{r cache=TRUE, results='hide'}
+m5_b <- brm(NEP ~ Identity + CSEStotal + LibCon + Age + CCpercent, data = newData,
+            prior = prior(normal(2.3, 0.16), class = "b", coef = "IdentityGenZ") + 
+              prior(normal(2.2, 0.16), class = "b", coef = "IdentityMillennial") +
+              prior(normal(0.38, 0.16), class = "b", coef = "IdentityBabyBoomer") + 
+              prior(normal(2.6, 0.1), class = "b", coef = "IdentityLiberal") +
+              prior(normal(-0.61515, 0.27414), class = "b", coef = "LibCon") +
+              prior(normal(-0.07686, 0.07046), class = "b", coef = "Age") +
+              prior(normal(3.25, 0.4), class = "Intercept") +
+              prior(student_t(4, 2, 0.5), class = "sigma"))
+```
+
+
+Show summary
+```{r}
+print(m5_b)
+prior_summary(m5_b)
+```
+
+
+Model comparison
+```{r cache=TRUE}
+waic3 <- waic(m3_b)
+waic4 <- waic(m4_b)
+waic5 <- waic(m5_b)
+
+loo_compare(waic3, waic4, waic5)
+```
+
+R2
+```{r}
+bayes_R2(m3_b)
+bayes_R2(m4_b)
+bayes_R2(m5_b)
+```
+
+
+## Posterior plots
+
+```{r}
+plot(m5_b)
+```
+
+
+```{r}
+pp_check(m3_b, group = "Identity", type = "dens_overlay_grouped")
+pp_check(m4_b, group = "Identity", type = "dens_overlay_grouped")
+pp_check(m5_b, group = "Identity", type = "dens_overlay_grouped")
+```
+
+
+
+
+# Results
+
+As shown in the graph below, the chains mixed well.
+
+```{r rank-hist-m1}
+# bayesplot::mcmc_rank_hist(m1_b)
+# bayesplot::mcmc_rank_hist(m2_b)
+# bayesplot::mcmc_rank_hist(m3_b)
+# bayesplot::mcmc_rank_hist(m4_b)
+bayesplot::mcmc_rank_hist(m5_b)
+```
+
+For interpreting our results, the 95% credibility intervals for main effect of manipulation on NEP score (note that conservative / political identity manipulation is the default), for both self-identified millennial and Gen-Z, contain 0, so we cannot conclude that there is not a statistically significant difference in NEP scores caused by priming condition. In fact, the only variables for which the 95% CI does not contain zero are CCpercent and LibCon, which both make sense theoretically speaking (of course people who attribute climate change to non-human causes will score lower on environmentalism, and people who are more politically conservative similarly score lower on environmentalist).  There is no statistically significant effect of other controls (age, gender) on environmentalism scores.
+
+
+
